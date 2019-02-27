@@ -16,14 +16,16 @@
 package com.github.chrishantha.jfr.flamegraph.output;
 
 import com.beust.jcommander.Parameter;
-import com.jrockit.mc.common.IMCFrame;
-import com.jrockit.mc.common.IMCMethod;
-import com.jrockit.mc.flightrecorder.FlightRecording;
-import com.jrockit.mc.flightrecorder.FlightRecordingLoader;
-import com.jrockit.mc.flightrecorder.internal.model.FLRStackTrace;
-import com.jrockit.mc.flightrecorder.spi.IEvent;
-import com.jrockit.mc.flightrecorder.spi.ITimeRange;
-import com.jrockit.mc.flightrecorder.spi.IView;
+import org.openjdk.jmc.common.IMCFrame;
+import org.openjdk.jmc.common.IMCStackTrace;
+import org.openjdk.jmc.common.item.IItem;
+import org.openjdk.jmc.common.item.IItemCollection;
+import org.openjdk.jmc.common.item.IItemIterable;
+import org.openjdk.jmc.common.item.ItemToolkit;
+import org.openjdk.jmc.flightrecorder.JfrAttributes;
+import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
+import org.openjdk.jmc.flightrecorder.stacktrace.FrameSeparator;
+import org.openjdk.jmc.flightrecorder.stacktrace.StacktraceFormatToolkit;
 
 import java.io.BufferedWriter;
 import java.io.File;
@@ -33,14 +35,7 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.Writer;
-import java.text.MessageFormat;
-import java.time.Duration;
-import java.time.Instant;
-import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
-import java.time.format.FormatStyle;
 import java.util.Stack;
-import java.util.concurrent.TimeUnit;
 import java.util.zip.GZIPInputStream;
 
 /**
@@ -104,7 +99,7 @@ public final class JFRToFlameGraphWriter {
     }
 
     public void process() throws Exception {
-        FlightRecording recording = loadRecording();
+        IItemCollection recording = loadRecording();
 
         if (printJFRDetails) {
             printJFRDetails(recording);
@@ -113,10 +108,10 @@ public final class JFRToFlameGraphWriter {
         }
     }
 
-    private FlightRecording loadRecording() throws IOException {
-        FlightRecording recording;
+    private IItemCollection loadRecording() throws Exception {
+        IItemCollection recording;
         try {
-            recording = FlightRecordingLoader.loadFile(decompress ? decompressFile(jfrdump) : jfrdump);
+            recording = JfrLoaderToolkit.loadEvents(decompress ? decompressFile(jfrdump) : jfrdump);
         } catch (Exception e) {
             System.err.println("Could not load the JFR file.");
             if (!decompress) {
@@ -127,24 +122,25 @@ public final class JFRToFlameGraphWriter {
         return recording;
     }
 
-    private void convertToStacks(FlightRecording recording) throws IOException {
-        IView view = recording.createView();
-
+    private void convertToStacks(IItemCollection recording) throws IOException {
         FlameGraphOutputWriter flameGraphOutputWriter = outputType.createFlameGraphOutputWriter();
         flameGraphOutputWriter.initialize(parameters);
 
-        view.setFilter(eventType::matches);
 
-        for (IEvent event : view) {
-            if (!matchesTimeRange(event)) {
-                continue;
-            }
+        for (IItemIterable items : recording) {
+            for (IItem item : items) {
+                if (!eventType.matches(item)) {
+                    continue;
+                }
 
-            FLRStackTrace flrStackTrace = (FLRStackTrace) event.getValue(EVENT_VALUE_STACK);
-            if (flrStackTrace != null) {
-                Stack<String> stack = getStack(event);
-                long value = eventType.getValue(event);
-                flameGraphOutputWriter.processEvent(event.getStartTimestamp(), event.getEndTimestamp(), event.getDuration(), stack, value);
+                IMCStackTrace stackTrace = getStackTrace(item);
+                if (stackTrace == null) {
+                    continue;
+                }
+
+                Stack<String> stack = getStack(stackTrace);
+                long value = eventType.getValue(item);
+                flameGraphOutputWriter.processEvent(0, 0, 0, stack, value);
             }
         }
 
@@ -154,6 +150,11 @@ public final class JFRToFlameGraphWriter {
         }
     }
 
+    private static IMCStackTrace getStackTrace(IItem event) {
+        return ItemToolkit.getItemType(event).getAccessor(JfrAttributes.EVENT_STACKTRACE.getKey()).getMember(event);
+    }
+
+    /*
     private boolean matchesTimeRange(IEvent event) {
         long eventStartTimestamp = event.getStartTimestamp();
         long eventEndTimestamp = event.getEndTimestamp();
@@ -164,9 +165,10 @@ public final class JFRToFlameGraphWriter {
         }
         return false;
     }
+    */
 
-    private void printJFRDetails(FlightRecording recording) {
-        ITimeRange timeRange = recording.getTimeRange();
+    private void printJFRDetails(IItemCollection recording) {
+        /*ITimeRange timeRange = recording.getTimeRange();
 
         long startTimestamp = TimeUnit.NANOSECONDS.toSeconds(timeRange.getStartTimestamp());
         long endTimestamp = TimeUnit.NANOSECONDS.toSeconds(timeRange.getEndTimestamp());
@@ -221,16 +223,13 @@ public final class JFRToFlameGraphWriter {
         }
         System.out.format(PRINT_FORMAT, "JFR Duration", MessageFormat.format(DURATION_FORMAT, hours, minutes));
         System.out.format(PRINT_FORMAT, "Events Duration",
-                MessageFormat.format(DURATION_FORMAT, eventHours, eventMinutes));
+                MessageFormat.format(DURATION_FORMAT, eventHours, eventMinutes));*/
+        System.out.println("not implemented yet");
     }
 
-    private Stack<String> getStack(IEvent event) {
-        FLRStackTrace flrStackTrace = (FLRStackTrace) event.getValue(EVENT_VALUE_STACK);
+    private Stack<String> getStack(IMCStackTrace stackTrace) {
         Stack<String> stack = new Stack<>();
-        if (flrStackTrace == null) {
-            return stack;
-        }
-        for (IMCFrame frame : flrStackTrace.getFrames()) {
+        for (IMCFrame frame : stackTrace.getFrames()) {
             String frameName = getFrameName(frame);
             if (frameName != null) {
                 stack.push(frameName);
@@ -240,18 +239,17 @@ public final class JFRToFlameGraphWriter {
     }
 
     private String getFrameName(IMCFrame frame) {
-        StringBuilder methodBuilder = new StringBuilder();
-        IMCMethod method = frame.getMethod();
-        if (method == null) {
-            return null;
-        }
 
-        methodBuilder.append(method.getHumanReadable(showReturnValue, !useSimpleNames, true, !useSimpleNames, !hideArguments, !useSimpleNames));
-        if (!ignoreLineNumbers) {
-            methodBuilder.append(":");
-            methodBuilder.append(frame.getFrameLineNumber());
-        }
-        return methodBuilder.toString();
+        return StacktraceFormatToolkit.formatFrame(
+                frame,
+                new FrameSeparator(!ignoreLineNumbers ? FrameSeparator.FrameCategorization.LINE : FrameSeparator.FrameCategorization.METHOD, false),
+                false,
+                false,
+                true,
+                true,
+                false,
+                true
+        );
     }
 
     private File decompressFile(final File compressedFile) throws IOException {

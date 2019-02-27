@@ -17,12 +17,20 @@
 package com.github.chrishantha.jfr.flamegraph.output;
 
 import com.beust.jcommander.IStringConverter;
-import com.jrockit.mc.flightrecorder.spi.IEvent;
+import org.openjdk.jmc.common.item.IItem;
+import org.openjdk.jmc.common.item.IMemberAccessor;
+import org.openjdk.jmc.common.item.IType;
+import org.openjdk.jmc.common.item.ItemToolkit;
+import org.openjdk.jmc.common.unit.BinaryPrefix;
+import org.openjdk.jmc.common.unit.IQuantity;
+import org.openjdk.jmc.common.unit.UnitLookup;
+import org.openjdk.jmc.common.util.MemberAccessorToolkit;
+import org.openjdk.jmc.flightrecorder.JfrAttributes;
+import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Different types of events possibly available in a JFR recording.
@@ -52,12 +60,12 @@ public enum EventType {
         this.valueField = valueField;
     }
 
-    public boolean matches(IEvent event) {
-        String name = event.getEventType().getName();
+    public boolean matches(IItem event) {
+        String name = event.getType().getName();
         return Arrays.stream(eventNames).anyMatch(name::equals);
     }
 
-    public long getValue(IEvent event) {
+    public long getValue(IItem event) {
         return valueField.getValue(event);
     }
 
@@ -89,30 +97,50 @@ public enum EventType {
     private enum ValueField {
         COUNT {
             @Override
-            public long getValue(IEvent event) {
+            public long getValue(IItem event) {
                 return 1;
             }
         },
         DURATION {
             @Override
-            public long getValue(IEvent event) {
-                long nanos = (long) event.getValue("(duration)");
-                return TimeUnit.NANOSECONDS.toMillis(nanos);
+            public long getValue(IItem event) {
+                IType<IItem> itemType = ItemToolkit.getItemType(event);
+                IMemberAccessor<IQuantity, IItem> duration = itemType.getAccessor(JfrAttributes.DURATION.getKey());
+                if (duration == null) {
+                    IMemberAccessor<IQuantity, IItem> startTime = itemType.getAccessor(JfrAttributes.START_TIME.getKey());
+                    IMemberAccessor<IQuantity, IItem> endTime = itemType.getAccessor(JfrAttributes.END_TIME.getKey());
+                    duration = MemberAccessorToolkit.difference(endTime, startTime);
+                }
+                return duration.getMember(event).in(UnitLookup.MILLISECOND).longValue();
             }
         },
         ALLOCATION_SIZE {
             @Override
-            public long getValue(IEvent event) {
-                return (long) event.getValue("allocationSize") / 1000;
+            public long getValue(IItem event) {
+                IType<IItem> itemType = ItemToolkit.getItemType(event);
+                IMemberAccessor<IQuantity, IItem> accessor = itemType.getAccessor(JdkAttributes.TLAB_SIZE.getKey());
+                if (accessor == null) {
+                    accessor = itemType.getAccessor(JdkAttributes.ALLOCATION_SIZE.getKey());
+                }
+                return accessor.getMember(event)
+                        .in(UnitLookup.MEMORY.getUnit(BinaryPrefix.KIBI))
+                        .longValue();
             }
         },
         TLAB_SIZE {
             @Override
-            public long getValue(IEvent event) {
-                return (long) event.getValue("tlabSize") / 1000;
+            public long getValue(IItem event) {
+                IType<IItem> itemType = ItemToolkit.getItemType(event);
+                IMemberAccessor<IQuantity, IItem> accessor = itemType.getAccessor(JdkAttributes.TLAB_SIZE.getKey());
+                if (accessor == null) {
+                    accessor = itemType.getAccessor(JdkAttributes.TLAB_SIZE.getKey());
+                }
+                return accessor.getMember(event)
+                        .in(UnitLookup.MEMORY.getUnit(BinaryPrefix.KIBI))
+                        .longValue();
             }
         };
 
-        public abstract long getValue(IEvent event);
+        public abstract long getValue(IItem event);
     }
 }

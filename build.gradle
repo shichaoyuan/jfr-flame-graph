@@ -5,8 +5,6 @@ plugins {
     id 'net.researchgate.release' version '2.6.0'
 }
 
-apply from: "gradle/missioncontrol.gradle"
-
 group = 'com.github.chrishantha.jfr'
 version = '0.0.4-SNAPSHOT'
 description = "Create Flame Graphs using Java Flight Recordings"
@@ -18,13 +16,15 @@ tasks.withType(JavaCompile) {
 }
 
 repositories {
+    mavenLocal()
     jcenter()
 }
 
 dependencies {
-    implementation findMcJars()
     implementation "com.beust:jcommander:1.72"
     implementation "com.google.code.gson:gson:2.8.5"
+    implementation "org.openjdk.jmc:common:7.1.0-SNAPSHOT"
+    implementation "org.openjdk.jmc:flightrecorder:7.1.0-SNAPSHOT"
     testImplementation "junit:junit:4.12"
 }
 
